@@ -8,15 +8,20 @@
 
 use std::path::Path;
 
+// `COLUMN_WIDTH_FACTOR` is IronCalc's own pixels-per-character ratio for
+// the `set_column_width` / `get_column_width` APIs.  Imported rather than
+// mirrored locally: it went 12.0 -> 9.0 in 0.8, and a stale copy would
+// silently rescale every column width we round-trip.
 use ironcalc_xlsx::base::{
     expressions::utils::number_to_column,
     types::{
         Alignment as IcAlignment, Border as IcBorder, BorderItem as IcBorderItem,
-        BorderStyle as IcBorderStyle, Cell, Comment as IcComment, HorizontalAlignment,
-        SheetState as IcSheetState, Table as IcTable, TableColumn as IcTableColumn,
-        TableStyleInfo as IcTableStyleInfo, VerticalAlignment,
+        BorderStyle as IcBorderStyle, Cell, Color as IcColor, Comment as IcComment, Fill as IcFill,
+        Font as IcFont, HorizontalAlignment, SheetState as IcSheetState, Table as IcTable,
+        TableColumn as IcTableColumn, TableStyleInfo as IcTableStyleInfo, Theme as IcTheme,
+        VerticalAlignment,
     },
-    Model,
+    Model, COLUMN_WIDTH_FACTOR,
 };
 use ironcalc_xlsx::export::save_to_xlsx;
 use ironcalc_xlsx::import::load_from_xlsx;
@@ -377,13 +382,9 @@ impl Engine for IronCalcEngine {
 
     fn set_sheet_color(&mut self, sheet: SheetId, color: Option<RgbColor>) -> Result<()> {
         self.extend_sheets_to(sheet)?;
-        // IronCalc's `set_sheet_color` accepts a `"#RRGGBB"` hex string
-        // (with leading `#`) or an empty string to clear.
-        let hex = color
-            .map(|c| format!("#{}", c.to_rgb_hex()))
-            .unwrap_or_default();
+        let ic_color = to_ic_color(color);
         self.model
-            .set_sheet_color(self.sheet_index(sheet), &hex)
+            .set_sheet_color(self.sheet_index(sheet), &ic_color)
             .map_err(EngineError::Backend)
     }
 
@@ -402,11 +403,10 @@ impl Engine for IronCalcEngine {
         if let Some(sz) = style.size {
             s.font.sz = sz as i32;
         }
-        // Font color: IronCalc expects a `#RRGGBB` hex string (no
-        // alpha).  `None` writes the OOXML "automatic" sentinel —
-        // the saved xlsx will omit `<color>` on this cell's font, and
-        // the renderer will pick a contrasting fg if a fill is set.
-        s.font.color = style.color.map(|c| format!("#{}", c.to_rgb_hex()));
+        // `None` writes the OOXML "automatic" sentinel — the saved xlsx
+        // will omit `<color>` on this cell's font, and the renderer will
+        // pick a contrasting fg if a fill is set.
+        s.font.color = to_ic_color(style.color);
         s.font.strike = style.strike;
         self.model
             .set_cell_style(sheet, row, col, &s)
@@ -567,11 +567,6 @@ impl Engine for IronCalcEngine {
     }
 }
 
-/// IronCalc stores column widths internally in character units; the
-/// `set_column_width` / `get_column_width` APIs take and return pixels
-/// via this factor.
-const COLUMN_WIDTH_FACTOR: f64 = 12.0;
-
 fn to_ic_alignment(a: Alignment) -> IcAlignment {
     IcAlignment {
         horizontal: match a.horizontal {
@@ -592,58 +587,59 @@ fn to_ic_alignment(a: Alignment) -> IcAlignment {
     }
 }
 
-/// Translate L123's `Fill` into an IronCalc `Fill` ready to be
-/// persisted on a cell style.  `Fill::DEFAULT` maps to
-/// `pattern_type = "none"`; a solid fill goes on `bg_color` — IronCalc
-/// (unlike the xlsx XML schema, where solid-fill color lives in
-/// `<fgColor>`) treats `bg_color` as the solid fill's color, and its
-/// save path serializes it there.  Keeping our reader and writer on
-/// the same field avoids a save-then-read round trip losing the color.
-fn to_ic_fill(f: Fill) -> ironcalc_xlsx::base::types::Fill {
+/// Translate an L123 color into IronCalc's `Color`.  `None` maps to
+/// `Color::None`, the OOXML "automatic" sentinel — the saved xlsx
+/// omits the `<color>` element for that slot entirely.
+fn to_ic_color(c: Option<RgbColor>) -> IcColor {
+    match c {
+        Some(c) => IcColor::Rgb(format!("#{}", c.to_rgb_hex())),
+        None => IcColor::None,
+    }
+}
+
+/// Translate an IronCalc `Color` back to L123.
+///
+/// IronCalc 0.8 keeps theme colors symbolic (`Color::Theme(slot, tint)`)
+/// where 0.7 resolved them to hex at import time, so theme slots have to
+/// be resolved here against the workbook theme — Excel's default palette
+/// is theme-based, and dropping them would strip the color from most
+/// Excel-authored cells.  Unparseable hex degrades to `None` rather than
+/// panicking the load path.
+fn from_ic_color(c: &IcColor, theme: &IcTheme) -> Option<RgbColor> {
+    match c {
+        IcColor::None => None,
+        _ => RgbColor::from_hex(&c.to_rgb(theme)),
+    }
+}
+
+/// Translate L123's `Fill` into an IronCalc `Fill`.
+///
+/// IronCalc 0.8 reduced `Fill` to a single `color` — the pattern_type /
+/// fg_color / bg_color triple is gone, and with it the 0.7-era ambiguity
+/// about which field a solid fill's color lived in.  `FillPattern::None`
+/// is therefore just an absent color.
+fn to_ic_fill(f: Fill) -> IcFill {
     match f.pattern {
-        FillPattern::None => ironcalc_xlsx::base::types::Fill {
-            pattern_type: "none".to_string(),
-            fg_color: None,
-            bg_color: None,
+        FillPattern::None => IcFill {
+            color: IcColor::None,
         },
-        FillPattern::Solid => ironcalc_xlsx::base::types::Fill {
-            pattern_type: "solid".to_string(),
-            fg_color: None,
-            // IronCalc's xlsx exporter blindly writes `FF` + whatever
-            // string we supply here, so we hand it a 6-char RGB (no
-            // alpha) to produce a well-formed ARGB value on disk.
-            bg_color: f.bg.map(|c| c.to_rgb_hex()),
+        FillPattern::Solid => IcFill {
+            color: to_ic_color(f.bg),
         },
     }
 }
 
-/// Translate an IronCalc `Fill` back to L123's `Fill`.  Collapses every
-/// non-`none` pattern to `Solid` (Excel's ~18 patterns can't render
-/// in a terminal cell; v1 drops the hatch and keeps the color).
-///
-/// Reads `fg_color` first per the xlsx spec — `<fgColor>` is where the
-/// visible solid-fill color lives.  Falls back to `bg_color` for files
-/// our own writer produced (it puts the color in `bg_color` because
-/// IronCalc's serializer ignores `fg_color` for solids).  Reading bg
-/// first would be wrong for Excel-authored files: Excel commonly
-/// emits `<bgColor indexed="64"/>` which IronCalc's indexed table
-/// resolves to "#000000", collapsing every imported fill to black.
-/// Unknown hex is silently dropped so a corrupt xlsx doesn't panic
-/// the load path.
-fn from_ic_fill(f: &ironcalc_xlsx::base::types::Fill) -> Fill {
-    match f.pattern_type.as_str() {
-        "none" | "" => Fill::DEFAULT,
-        _ => {
-            let color = f
-                .fg_color
-                .as_deref()
-                .and_then(RgbColor::from_hex)
-                .or_else(|| f.bg_color.as_deref().and_then(RgbColor::from_hex));
-            Fill {
-                pattern: FillPattern::Solid,
-                bg: color,
-            }
-        }
+/// Translate an IronCalc `Fill` back to L123's `Fill`.  A fill with no
+/// color is the no-override default; anything else renders as `Solid`
+/// (Excel's ~18 hatch patterns can't render in a terminal cell, and 0.8
+/// no longer reports which one was used anyway).
+fn from_ic_fill(f: &IcFill, theme: &IcTheme) -> Fill {
+    match from_ic_color(&f.color, theme) {
+        None => Fill::DEFAULT,
+        color => Fill {
+            pattern: FillPattern::Solid,
+            bg: color,
+        },
     }
 }
 
@@ -806,7 +802,7 @@ fn to_ic_border_item(edge: BorderEdge) -> IcBorderItem {
     };
     IcBorderItem {
         style,
-        color: edge.color.map(|c| format!("#{}", c.to_rgb_hex())),
+        color: to_ic_color(edge.color),
     }
 }
 
@@ -814,7 +810,7 @@ fn to_ic_border_item(edge: BorderEdge) -> IcBorderItem {
 /// Every dash-dot-variant collapses to `Dashed`; the rest map
 /// one-to-one.  Unknown hex in `color` is dropped to `None` so a
 /// corrupt xlsx doesn't panic the load path.
-fn from_ic_border_item(item: &IcBorderItem) -> BorderEdge {
+fn from_ic_border_item(item: &IcBorderItem, theme: &IcTheme) -> BorderEdge {
     let style = match item.style {
         IcBorderStyle::Thin => BorderStyle::Thin,
         IcBorderStyle::Medium => BorderStyle::Medium,
@@ -828,16 +824,16 @@ fn from_ic_border_item(item: &IcBorderItem) -> BorderEdge {
     };
     BorderEdge {
         style,
-        color: item.color.as_deref().and_then(RgbColor::from_hex),
+        color: from_ic_color(&item.color, theme),
     }
 }
 
-fn from_ic_border(b: &IcBorder) -> Border {
+fn from_ic_border(b: &IcBorder, theme: &IcTheme) -> Border {
     Border {
-        left: b.left.as_ref().map(from_ic_border_item),
-        right: b.right.as_ref().map(from_ic_border_item),
-        top: b.top.as_ref().map(from_ic_border_item),
-        bottom: b.bottom.as_ref().map(from_ic_border_item),
+        left: b.left.as_ref().map(|i| from_ic_border_item(i, theme)),
+        right: b.right.as_ref().map(|i| from_ic_border_item(i, theme)),
+        top: b.top.as_ref().map(|i| from_ic_border_item(i, theme)),
+        bottom: b.bottom.as_ref().map(|i| from_ic_border_item(i, theme)),
     }
 }
 
@@ -940,8 +936,7 @@ impl IronCalcEngine {
     pub fn sheet_color(&self, sheet: SheetId) -> Option<RgbColor> {
         let idx = self.sheet_index(sheet) as usize;
         let ws = self.model.workbook.worksheets.get(idx)?;
-        let hex = ws.color.as_deref()?;
-        RgbColor::from_hex(hex)
+        from_ic_color(&ws.color, &self.model.workbook.theme)
     }
 
     /// Enumerate every column that carries a custom width override, in
@@ -1195,6 +1190,7 @@ impl IronCalcEngine {
     /// (keeping the map small even on large styled sheets).
     pub fn used_cell_borders(&self) -> Vec<(Address, Border)> {
         let mut out = Vec::new();
+        let theme = &self.model.workbook.theme;
         for (sheet_idx, ws) in self.model.workbook.worksheets.iter().enumerate() {
             let sheet = SheetId(sheet_idx as u16);
             for (&row_1b, row_cells) in &ws.sheet_data {
@@ -1214,7 +1210,7 @@ impl IronCalcEngine {
                     else {
                         continue;
                     };
-                    let b = from_ic_border(&style.border);
+                    let b = from_ic_border(&style.border, theme);
                     if !b.is_default() {
                         out.push((addr, b));
                     }
@@ -1233,11 +1229,15 @@ impl IronCalcEngine {
     /// we don't flood the UI map with every cell IronCalc ever
     /// touched.
     pub fn used_cell_font_styles(&self) -> Vec<(Address, FontStyle)> {
-        // IronCalc 0.7 creates an empty Model with Font::default() ==
+        // IronCalc creates an empty Model with Font::default() ==
         // 13pt Calibri on every styled cell.  Treat `13` (or any
         // cell where font.sz matches the workbook-wide default) as
         // "no override" so the map stays small.
-        const DEFAULT_SIZE: i32 = 13;
+        // IronCalc's stock font changed size across versions (13pt
+        // Calibri in 0.7, 12pt Inter in 0.8); probe it rather than
+        // hardcoding, or every cell reads back as a size override.
+        let default_size = IcFont::default().sz;
+        let theme = &self.model.workbook.theme;
         let mut out = Vec::new();
         for (sheet_idx, ws) in self.model.workbook.worksheets.iter().enumerate() {
             let sheet = SheetId(sheet_idx as u16);
@@ -1274,13 +1274,9 @@ impl IronCalcEngine {
                     // picked rgb black) loses round-trip fidelity in the
                     // adapter view; the alternative would be painting
                     // black on every Excel-authored cell.
-                    let color = style
-                        .font
-                        .color
-                        .as_deref()
-                        .and_then(RgbColor::from_hex)
-                        .filter(|c| *c != RgbColor::BLACK);
-                    let size = if style.font.sz != DEFAULT_SIZE {
+                    let color =
+                        from_ic_color(&style.font.color, theme).filter(|c| *c != RgbColor::BLACK);
+                    let size = if style.font.sz != default_size {
                         Some((style.font.sz as u8).max(1))
                     } else {
                         None
@@ -1305,6 +1301,7 @@ impl IronCalcEngine {
     /// through /FS → /FR.
     pub fn used_cell_fills(&self) -> Vec<(Address, Fill)> {
         let mut out = Vec::new();
+        let theme = &self.model.workbook.theme;
         for (sheet_idx, ws) in self.model.workbook.worksheets.iter().enumerate() {
             let sheet = SheetId(sheet_idx as u16);
             for (&row_1b, row_cells) in &ws.sheet_data {
@@ -1324,7 +1321,7 @@ impl IronCalcEngine {
                     else {
                         continue;
                     };
-                    let fill = from_ic_fill(&style.fill);
+                    let fill = from_ic_fill(&style.fill, theme);
                     if !fill.is_default() {
                         out.push((addr, fill));
                     }
@@ -3004,30 +3001,57 @@ mod tests {
     }
 
     #[test]
-    fn from_ic_fill_excel_authored_solid_prefers_fg_over_bg() {
-        // Excel writes solid-fill color in <fgColor/>, while <bgColor/>
-        // is typically the system "automatic" indexed=64 — which
-        // IronCalc helpfully resolves to "#000000" because the indexed
-        // table starts at black.  If our reader prefers bg_color, every
-        // Excel-authored fill collapses to black.  Verify we read the
-        // visible color out of fg_color first.
+    fn from_ic_fill_absent_color_is_the_no_override_default() {
+        use l123_core::Fill;
+        let ic_fill = IcFill {
+            color: IcColor::None,
+        };
+        assert_eq!(from_ic_fill(&ic_fill, &IcTheme::default()), Fill::DEFAULT);
+    }
+
+    #[test]
+    fn from_ic_fill_rgb_color_becomes_a_solid_fill() {
+        // 0.8 collapsed pattern_type/fg_color/bg_color into a single
+        // `color`, so a colored fill is unambiguously Solid — the 0.7-era
+        // "which field holds the visible color" guesswork is gone.
         use l123_core::{Fill, FillPattern, RgbColor};
-        let ic_fill = ironcalc_xlsx::base::types::Fill {
-            pattern_type: "solid".to_string(),
-            fg_color: Some("#FF0000".to_string()),
-            bg_color: Some("#000000".to_string()),
+        let ic_fill = IcFill {
+            color: IcColor::Rgb("#FF0000".to_string()),
         };
         assert_eq!(
-            from_ic_fill(&ic_fill),
+            from_ic_fill(&ic_fill, &IcTheme::default()),
             Fill {
                 pattern: FillPattern::Solid,
                 bg: Some(RgbColor {
                     r: 0xFF,
                     g: 0,
-                    b: 0,
+                    b: 0
                 }),
             }
         );
+    }
+
+    #[test]
+    fn from_ic_color_resolves_theme_slots_against_the_workbook_theme() {
+        // 0.7 resolved `<color theme="N"/>` to hex during import; 0.8
+        // hands us `Color::Theme(slot, tint)` verbatim.  Excel's default
+        // palette is theme-based, so failing to resolve here would strip
+        // the color off most Excel-authored cells.  Slot 4 is accent1,
+        // "#4472C4" in the stock Office theme.
+        use l123_core::RgbColor;
+        assert_eq!(
+            from_ic_color(&IcColor::Theme(4, 0.0), &IcTheme::default()),
+            Some(RgbColor {
+                r: 0x44,
+                g: 0x72,
+                b: 0xC4
+            })
+        );
+    }
+
+    #[test]
+    fn from_ic_color_maps_the_automatic_sentinel_to_none() {
+        assert_eq!(from_ic_color(&IcColor::None, &IcTheme::default()), None);
     }
 
     #[test]

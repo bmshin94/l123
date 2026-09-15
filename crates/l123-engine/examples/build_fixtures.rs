@@ -21,7 +21,8 @@ use std::io::{Read, Write};
 
 use ironcalc_xlsx::base::{
     types::{
-        Alignment, Border, BorderItem, BorderStyle, Fill, HorizontalAlignment, VerticalAlignment,
+        Alignment, Border, BorderItem, BorderStyle, Color, Fill, HorizontalAlignment,
+        VerticalAlignment,
     },
     Model,
 };
@@ -154,9 +155,9 @@ fn build_alignment(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 ///   D1 'plain'  no fill
 fn build_fill(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new_empty("fill", "en", "UTC", "en")?;
-    write_cell_with_fill(&mut model, 1, 1, "'red", "FF0000")?;
-    write_cell_with_fill(&mut model, 1, 2, "'green", "00C800")?;
-    write_cell_with_fill(&mut model, 1, 3, "'blue", "3366CC")?;
+    write_cell_with_fill(&mut model, 1, 1, "'red", "#FF0000")?;
+    write_cell_with_fill(&mut model, 1, 2, "'green", "#00C800")?;
+    write_cell_with_fill(&mut model, 1, 3, "'blue", "#3366CC")?;
     // D1 'plain' — no fill applied; only the value is written.
     model.set_user_input(0, 1, 4, "'plain".to_string())?;
     let path_str = path
@@ -286,14 +287,14 @@ fn build_font(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 ///   D1 'explicit-blk'  no fill                   font = #000000
 fn build_auto_contrast(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut model = Model::new_empty("auto_contrast", "en", "UTC", "en")?;
-    write_cell_with_fill(&mut model, 1, 1, "'auto-light", "FFFF00")?;
-    write_cell_with_fill(&mut model, 1, 2, "'auto-dark", "C00000")?;
+    write_cell_with_fill(&mut model, 1, 1, "'auto-light", "#FFFF00")?;
+    write_cell_with_fill(&mut model, 1, 2, "'auto-dark", "#C00000")?;
     // C1 — fill + explicit font color (red).  Combined writer: set
     // fill first, then set the font color on the same style read back.
-    write_cell_with_fill(&mut model, 1, 3, "'explicit-red", "FFFF00")?;
+    write_cell_with_fill(&mut model, 1, 3, "'explicit-red", "#FFFF00")?;
     {
         let mut style = model.get_style_for_cell(0, 1, 3)?;
-        style.font.color = Some("#FF0000".to_string());
+        style.font.color = Color::Rgb("#FF0000".to_string());
         model.set_cell_style(0, 1, 3, &style)?;
     }
     // D1 — explicit black font, no fill.  Round-trips as Some(BLACK)
@@ -609,7 +610,10 @@ fn write_cell_with_right_border(
         diagonal_up: false,
         diagonal_down: false,
         left: None,
-        right: Some(BorderItem { style, color: None }),
+        right: Some(BorderItem {
+            style,
+            color: Color::None,
+        }),
         top: None,
         bottom: None,
         diagonal: None,
@@ -628,7 +632,10 @@ fn write_cell_with_font(
 ) -> Result<(), String> {
     model.set_user_input(0, row_1b, col_1b, input.to_string())?;
     let mut style = model.get_style_for_cell(0, row_1b, col_1b)?;
-    style.font.color = color_hex.map(str::to_string);
+    style.font.color = match color_hex {
+        Some(hex) => Color::Rgb(hex.to_string()),
+        None => Color::None,
+    };
     style.font.strike = strike;
     model.set_cell_style(0, row_1b, col_1b, &style)?;
     Ok(())
@@ -644,13 +651,7 @@ fn write_cell_with_fill(
     model.set_user_input(0, row_1b, col_1b, input.to_string())?;
     let mut style = model.get_style_for_cell(0, row_1b, col_1b)?;
     style.fill = Fill {
-        pattern_type: "solid".to_string(),
-        fg_color: None,
-        // IronCalc's xlsx exporter prepends `FF` to this string, so we
-        // hand it a 6-char RGB (no alpha) to get a well-formed ARGB
-        // on disk.  Matches the shape used by `to_ic_fill` in the
-        // L123 engine adapter.
-        bg_color: Some(rgb_hex.to_string()),
+        color: Color::Rgb(rgb_hex.to_string()),
     };
     model.set_cell_style(0, row_1b, col_1b, &style)?;
     Ok(())

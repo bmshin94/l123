@@ -111,11 +111,16 @@ Use the `Makefile` to flip between modes — it sed-toggles two
 | Test with WK3  | `make test-wk3`     (= wk3-on + `cargo test --workspace --features l123-ui/wk3`) |
 | Public build   | `make build`        (= wk3-off + `cargo build --workspace`) |
 
-When WK3 is on, the `[patch.crates-io]` block in the workspace
-`Cargo.toml` redirects `ironcalc` and `ironcalc_base` to the local
-fork too — required to avoid two copies of `ironcalc_base` (crates.io
-and the path version `ironcalc_lotus` transitively depends on)
-colliding in the dep graph.
+`ironcalc_lotus` depends on the *published* `ironcalc_base`, so WK3
+mode needs no `[patch.crates-io]` redirect — the graph resolves to a
+single copy of that crate either way, and `wk3-on` only uncomments the
+one path dep.
+
+The commented `[patch.crates-io]` block in the workspace `Cargo.toml`
+is now purely for iterating on IronCalc itself. Don't enable it against
+a fork whose `main` has moved past the released version: the two trees
+drift (e.g. `Worksheet::merge_cells` -> `merged_cells`) and the build
+breaks.
 
 ---
 

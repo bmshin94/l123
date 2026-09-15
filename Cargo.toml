@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.3.0"
+version = "1.4.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/duane1024/l123"
@@ -40,8 +40,8 @@ l123-print  = { path = "crates/l123-print" }
 # Default: published crates from crates.io. For local IronCalc-fork
 # iteration, uncomment the [patch.crates-io] block at the bottom of
 # this file.
-ironcalc_xlsx  = { package = "ironcalc", version = "0.7" }
-ironcalc_base  = { package = "ironcalc_base", version = "0.7" }
+ironcalc_xlsx  = { package = "ironcalc", version = "0.8" }
+ironcalc_base  = { package = "ironcalc_base", version = "0.8" }
 # `ironcalc_lotus` is not on crates.io; it is pulled in directly by
 # `l123-engine` under the `wk3` feature only. See that crate's
 # Cargo.toml.
@@ -88,10 +88,13 @@ codegen-units = 1
 # committed branch.
 #
 # Uncomment to redirect the `ironcalc` and `ironcalc_base` deps to a
-# sibling checkout at `../IronCalc`. Required if you build with
-# `--features wk3` and want all three IronCalc crates to come from
-# the same source tree (the `wk3` feature already pulls
-# `ironcalc_lotus` from `../IronCalc/lotus`).
+# sibling checkout at `../IronCalc`, for iterating on IronCalc itself.
+#
+# NOT needed for `--features wk3`: `ironcalc_lotus` depends on the
+# published `ironcalc_base`, so the WK3 build already resolves to one
+# copy of that crate.  Enabling this against a fork whose `main` has
+# moved past the released version will break the build — those two
+# trees drift (e.g. `Worksheet::merge_cells` -> `merged_cells`).
 #
 # [patch.crates-io]
 # ironcalc      = { path = "../IronCalc/xlsx" }
