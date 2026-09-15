@@ -12,22 +12,22 @@ license.workspace = true
 # lives only in a local IronCalc fork at `../../../IronCalc/lotus`
 # (i.e. a sibling checkout of this repo's parent dir).
 #
-# To enable WK3 read support:
-#   1. Clone the IronCalc fork that ships the `lotus` crate so that
-#      `../IronCalc/lotus` exists alongside this repo.
-#   2. Uncomment the `ironcalc_lotus` line in [dependencies] below.
-#   3. Build with `--features wk3` (or `--features l123/wk3` when
-#      building the binary).
+# On this branch the `ironcalc_lotus` dep below is already uncommented
+# (that is what separates it from `master`), so WK3 support only needs:
+#   1. A checkout of the IronCalc fork's `lotus_file_support_0.8`
+#      branch at `../IronCalc`, so `../IronCalc/lotus` exists
+#      alongside this repo.
+#   2. `--features wk3` (or `--features l123/wk3` for the binary).
 #
-# Default-off keeps plain `cargo build` working with no IronCalc
-# clone on disk.
+# Plain `cargo build` therefore requires that clone on disk here; use
+# `master` for the public-clean build that does not.
 wk3 = []
 
 [dependencies]
 l123-core = { workspace = true }
 ironcalc_xlsx = { workspace = true }
-# Uncomment the next line together with `--features wk3` (see [features] above):
-# ironcalc_lotus = { path = "../../../IronCalc/lotus" }
+# Uncommented on this branch by design — see [features] above.
+ironcalc_lotus = { path = "../../../IronCalc/lotus" }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
